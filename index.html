@@ -38,6 +38,9 @@ tr.zona-row td.rowlabel{cursor:pointer;}
 tr.zona-row:hover td{background:#d3dde7;}
 tr.cola-row td.rowlabel{cursor:pointer;}
 tr.cola-row:hover td{background:#f7fafc;}
+tr.fecha-row td{background:#f2f5f8;}
+tr.fecha-row td.rowlabel{cursor:pointer;color:#444;}
+tr.fecha-row:hover td{background:#e9eef3;}
 tr.leaf-row td{color:#555;font-size:12px;background:#fbfbfb;}
 tr.leaf-row{display:none;}
 .section-title{font-weight:700;color:#1b3a5c;padding:8px 10px;background:#eef2f6;font-size:13px;}
@@ -151,9 +154,9 @@ function aggregateRows(name, rows){
 
 function rowHTML(r, kind, depth, dataAttrs){
   const pad = 14 + depth*16;
-  const cls = kind==='total' ? 'total-row' : (kind==='zona' ? 'zona-row' : 'cola-row');
+  const cls = kind==='total' ? 'total-row' : (kind==='zona' ? 'zona-row' : (kind==='fecha' ? 'fecha-row' : 'cola-row'));
   const attrs = dataAttrs || '';
-  const caret = (kind==='zona' || kind==='cola') ? '<span class="toggle">▸</span> ' : '';
+  const caret = (kind==='zona' || kind==='cola' || kind==='fecha') ? '<span class="toggle">▸</span> ' : '';
   return `<tr class="${cls}" ${attrs}>
     <td class="rowlabel" style="padding-left:${pad}px;">${caret}${r.name}</td>
     <td>${fmtInt(r['Chats Out'])}</td>
@@ -176,14 +179,12 @@ function rowHTML(r, kind, depth, dataAttrs){
   </tr>`;
 }
 
-function leafRowsHTML(cola, dateKey, dataset){
-  const byDate = (dataset.leaf_detail || {})[cola] || {};
-  const phones = byDate[dateKey] || [];
+function phoneRowsHTML(fechaKey, phones){
   if(phones.length===0){
-    return `<tr class="leaf-row" data-parent="${cola}"><td class="rowlabel" style="padding-left:48px;color:#999;" colspan="22">Sin teléfonos cruzados en esta cola/fecha.</td></tr>`;
+    return `<tr class="leaf-row" data-parent="${fechaKey}"><td class="rowlabel" style="padding-left:80px;color:#999;" colspan="22">Sin teléfonos cruzados.</td></tr>`;
   }
-  return phones.map(p => `<tr class="leaf-row" data-parent="${cola}">
-    <td class="rowlabel" style="padding-left:48px;font-family:monospace;">${p.phone}${p.date ? ' <span style="color:#999;font-family:Segoe UI,Arial,sans-serif;">· Día '+p.date+'</span>' : ''}</td>
+  return phones.map(p => `<tr class="leaf-row" data-parent="${fechaKey}">
+    <td class="rowlabel" style="padding-left:80px;font-family:monospace;">${p.phone}</td>
     <td colspan="12"></td>
     <td class="${p.contactado?'flag1':'flag0'}">${p.contactado?'Sí':'No'}</td><td></td>
     <td class="${p.interesado?'flag1':'flag0'}">${p.interesado?'Sí':'No'}</td><td></td>
@@ -191,6 +192,34 @@ function leafRowsHTML(cola, dateKey, dataset){
     <td class="${p.promesa?'flag1':'flag0'}">${p.promesa?'Sí':'No'}</td><td></td>
     <td class="${p.ni?'flag1':'flag0'}">${p.ni?'Sí':'No'}</td><td></td>
   </tr>`).join('');
+}
+
+// Cola -> Fecha (día) -> Teléfono/DN
+function fechaGroupHTML(cola, dateKey, dataset){
+  const byDate = (dataset.leaf_detail || {})[cola] || {};
+  const allEntries = byDate[dateKey] || [];
+  if(allEntries.length===0){
+    return `<tr class="leaf-row" data-parent="cola::${cola}"><td class="rowlabel" style="padding-left:48px;color:#999;" colspan="22">Sin teléfonos cruzados en esta cola/fecha.</td></tr>`;
+  }
+  // group by actual date of each entry (works both for "Todas" and for a single selected day)
+  const byDay = {};
+  const order = [];
+  allEntries.forEach(p=>{
+    const d = p.date || dateKey;
+    if(!byDay[d]){ byDay[d]=[]; order.push(d); }
+    byDay[d].push(p);
+  });
+  order.sort((a,b)=>parseInt(a)-parseInt(b));
+  let html = '';
+  order.forEach(d=>{
+    const phones = byDay[d];
+    const dayRow = (dataset.data_by_date[d] && dataset.data_by_date[d].rows.find(r=>r.name===cola)) || null;
+    const rec = dayRow ? {...dayRow, name: 'Día '+d} : aggregateRows('Día '+d, phones.map(()=>({})));
+    const fechaKey = `cola::${cola}::dia::${d}`;
+    html += rowHTML(rec, 'fecha', 3, `data-fecha="${fechaKey}" data-colaparent="cola::${cola}"`);
+    html += phoneRowsHTML(fechaKey, phones);
+  });
+  return html;
 }
 
 function currentDataset(){ return DATASETS[document.getElementById('lnSelect').value]; }
@@ -226,19 +255,33 @@ function render(){
       const zAgg = aggregateRows(z, rows);
       html += rowHTML(zAgg, 'zona', 1, `data-zona="${z}"`);
       rows.forEach(r=>{
-        html += rowHTML(r, 'cola', 2, `data-cola="${r.name}" data-zonaparent="${z}"`);
-        html += leafRowsHTML(r.name, dateKey, ds);
+        const colaKey = `cola::${r.name}`;
+        html += rowHTML(r, 'cola', 2, `data-cola="${colaKey}" data-zonaparent="${z}"`);
+        html += fechaGroupHTML(r.name, dateKey, ds);
       });
     });
   } else {
     activeRows.forEach(r=>{
-      html += rowHTML(r, 'cola', 1, `data-cola="${r.name}"`);
-      html += leafRowsHTML(r.name, dateKey, ds);
+      const colaKey = `cola::${r.name}`;
+      html += rowHTML(r, 'cola', 1, `data-cola="${colaKey}"`);
+      html += fechaGroupHTML(r.name, dateKey, ds);
     });
   }
 
   html += rowHTML(block.total, 'total', 0);
   tbody.innerHTML = html;
+
+  // fecha-rows start collapsed under every cola
+  document.querySelectorAll('tr.fecha-row').forEach(fr => fr.style.display = 'none');
+
+  function collapseCola(colaKey){
+    document.querySelectorAll(`tr.fecha-row[data-colaparent="${CSS.escape(colaKey)}"]`).forEach(fr=>{
+      fr.style.display = 'none';
+      const fechaKey = fr.getAttribute('data-fecha');
+      document.querySelectorAll(`tr.leaf-row[data-parent="${CSS.escape(fechaKey)}"]`).forEach(l => l.style.display='none');
+      const t = fr.querySelector('.toggle'); if(t) t.textContent = '▸';
+    });
+  }
 
   document.querySelectorAll('tr.zona-row').forEach(tr=>{
     const zona = tr.getAttribute('data-zona');
@@ -249,8 +292,8 @@ function render(){
       colaRows.forEach(c=>{
         c.style.display = showing ? 'none' : 'table-row';
         if(showing){
-          const cola = c.getAttribute('data-cola');
-          document.querySelectorAll(`tr.leaf-row[data-parent="${CSS.escape(cola)}"]`).forEach(l => l.style.display='none');
+          const colaKey = c.getAttribute('data-cola');
+          collapseCola(colaKey);
           const t = c.querySelector('.toggle'); if(t) t.textContent = '▸';
         }
       });
@@ -260,10 +303,23 @@ function render(){
   });
 
   document.querySelectorAll('tr.cola-row').forEach(tr=>{
+    const colaKey = tr.getAttribute('data-cola');
     tr.addEventListener('click', (ev)=>{
       ev.stopPropagation();
-      const cola = tr.getAttribute('data-cola');
-      const leaves = document.querySelectorAll(`tr.leaf-row[data-parent="${CSS.escape(cola)}"]`);
+      const fechaRows = document.querySelectorAll(`tr.fecha-row[data-colaparent="${CSS.escape(colaKey)}"]`);
+      const showing = fechaRows[0] && fechaRows[0].style.display === 'table-row';
+      fechaRows.forEach(fr => fr.style.display = showing ? 'none' : 'table-row');
+      if(showing) collapseCola(colaKey);
+      const toggle = tr.querySelector('.toggle');
+      if(toggle) toggle.textContent = showing ? '▸' : '▾';
+    });
+  });
+
+  document.querySelectorAll('tr.fecha-row').forEach(tr=>{
+    const fechaKey = tr.getAttribute('data-fecha');
+    tr.addEventListener('click', (ev)=>{
+      ev.stopPropagation();
+      const leaves = document.querySelectorAll(`tr.leaf-row[data-parent="${CSS.escape(fechaKey)}"]`);
       const showing = leaves[0] && leaves[0].style.display === 'table-row';
       leaves.forEach(l => l.style.display = showing ? 'none' : 'table-row');
       const toggle = tr.querySelector('.toggle');
@@ -279,8 +335,13 @@ function toggleAll(expand){
     const t = tr.querySelector('.toggle'); if(t) t.textContent = expand ? '▾' : '▸';
   });
   document.querySelectorAll('tr.cola-row').forEach(tr=>{
-    const cola = tr.getAttribute('data-cola');
-    document.querySelectorAll(`tr.leaf-row[data-parent="${CSS.escape(cola)}"]`).forEach(l => l.style.display = expand ? 'table-row' : 'none');
+    const colaKey = tr.getAttribute('data-cola');
+    document.querySelectorAll(`tr.fecha-row[data-colaparent="${CSS.escape(colaKey)}"]`).forEach(f => f.style.display = expand ? 'table-row' : 'none');
+    const t = tr.querySelector('.toggle'); if(t) t.textContent = expand ? '▾' : '▸';
+  });
+  document.querySelectorAll('tr.fecha-row').forEach(tr=>{
+    const fechaKey = tr.getAttribute('data-fecha');
+    document.querySelectorAll(`tr.leaf-row[data-parent="${CSS.escape(fechaKey)}"]`).forEach(l => l.style.display = expand ? 'table-row' : 'none');
     const t = tr.querySelector('.toggle'); if(t) t.textContent = expand ? '▾' : '▸';
   });
 }
